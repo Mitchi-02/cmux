@@ -29,6 +29,8 @@ enum SettingsSearchAliasIndex {
             return localized("settings.search.alias.section.browserImport", defaultValue: "chrome safari firefox brave edge arc bookmarks history cookies profiles")
         case .globalHotkey:
             return localized("settings.search.alias.section.globalHotkey", defaultValue: "system shortcut global keyboard show hide bring forward")
+        case .stickyTerminal:
+            return localized("settings.search.alias.section.stickyTerminal", defaultValue: "sticky terminal hotkey window quake overlay fullscreen dropdown drop down show hide auto hide")
         case .keyboardShortcuts:
             return localized("settings.search.alias.section.keyboardShortcuts", defaultValue: "keybinds key bindings hotkeys chords accelerators commands")
         case .workspaceColors:
@@ -159,6 +161,9 @@ enum SettingsSearchAliasIndex {
         "browser:history": localized("settings.search.alias.setting.browser.history", defaultValue: "clear browser history visited pages suggestions omnibar"),
         "globalHotkey:enable-hotkey": localized("settings.search.alias.setting.globalHotkey.enable-hotkey", defaultValue: "global hotkey enable system wide show hide all windows"),
         "globalHotkey:shortcut": localized("settings.search.alias.setting.globalHotkey.shortcut", defaultValue: "global hotkey shortcut recorder key command option control"),
+        "stickyTerminal:enable": localized("settings.search.alias.setting.stickyTerminal.enable", defaultValue: "sticky terminal hotkey window quake overlay fullscreen dropdown enable"),
+        "stickyTerminal:shortcut": localized("settings.search.alias.setting.stickyTerminal.shortcut", defaultValue: "sticky terminal shortcut recorder key command option control shift"),
+        "stickyTerminal:autoHide": localized("settings.search.alias.setting.stickyTerminal.autoHide", defaultValue: "sticky terminal auto hide focus lost switch app"),
         "keyboardShortcuts:shortcut-chords": localized("settings.search.alias.setting.keyboardShortcuts.shortcut-chords", defaultValue: "tmux prefix ctrl-b control-b multi key sequence chord cmux json"),
         "keyboardShortcuts:reset-defaults": localized("settings.search.alias.setting.keyboardShortcuts.reset-defaults", defaultValue: "reset restore default defaults built in builtin shortcuts hotkeys keybindings commands"),
         "keyboardShortcuts:shortcuts": localized("settings.search.alias.setting.keyboardShortcuts.shortcuts", defaultValue: "hotkeys keybindings key bindings commands keyboard accelerators shortcuts cmux json"),

@@ -1024,6 +1024,40 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertEqual(restored.minY, 100, accuracy: 0.001)
     }
 
+    func testResolvedWindowFrameClampsFullDisplayFrameBelowMenuBar() {
+        // A window saved maximized to the FULL display frame (982 tall) must
+        // restore with its top edge at/below the visibleFrame top (948) so the
+        // titlebar + traffic-light buttons stay reachable. Regression: the
+        // accessible-frame preserve check kept the 982-tall frame because a 30px
+        // sliver of the top strip stayed visible, leaving the traffic lights
+        // under the menu bar.
+        let fullDisplayFrame = SessionRectSnapshot(x: 0, y: 0, width: 1_512, height: 982)
+        let savedDisplay = SessionDisplaySnapshot(
+            displayID: 1,
+            frame: fullDisplayFrame,
+            visibleFrame: SessionRectSnapshot(x: 0, y: 0, width: 1_512, height: 948)
+        )
+        let display = AppDelegate.SessionDisplayGeometry(
+            displayID: 1,
+            frame: CGRect(x: 0, y: 0, width: 1_512, height: 982),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1_512, height: 948)
+        )
+
+        let restored = AppDelegate.resolvedWindowFrame(
+            from: fullDisplayFrame,
+            display: savedDisplay,
+            availableDisplays: [display],
+            fallbackDisplay: display
+        )
+
+        guard let restored else { return XCTFail("expected a restored frame") }
+        XCTAssertLessThanOrEqual(
+            restored.maxY,
+            display.visibleFrame.maxY + 0.5,
+            "restored window top must sit below the menu bar (traffic lights reachable)"
+        )
+    }
+
     func testResolvedWindowFrameKeepsIntersectingFrameWithoutDisplayMetadata() {
         let savedFrame = SessionRectSnapshot(x: 120, y: 80, width: 500, height: 350)
         let display = AppDelegate.SessionDisplayGeometry(

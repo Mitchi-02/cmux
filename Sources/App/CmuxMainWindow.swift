@@ -53,7 +53,7 @@ func configureCmuxMainWindowDragBehavior(_ window: NSWindow) {
 }
 
 @MainActor
-final class CmuxMainWindow: NSWindow {
+final class CmuxMainWindow: NSWindow, StickyTerminalOverlayConfigurable {
     static var minimumContentSize: NSSize {
         NSSize(
             width: CGFloat(SessionPersistencePolicy.minimumWindowWidth),
@@ -121,6 +121,41 @@ final class CmuxMainWindow: NSWindow {
         return behavior
     }
 
+    /// Whether this window is the dedicated Sticky Terminal overlay (see
+    /// `StickyTerminalController`). Overlay windows cover the entire screen
+    /// (including the menu bar) and float above other apps' windows.
+    ///
+    /// `nonisolated(unsafe)` so `WindowDecorationsController` can read it from
+    /// its window-notification handlers: it is written once during main-thread
+    /// window setup and only ever read on the main thread thereafter.
+    nonisolated(unsafe) private(set) var isStickyTerminalOverlay = false
+
+    /// Fraction of opacity for the Sticky Terminal overlay so the window
+    /// underneath stays faintly visible.
+    static let stickyTerminalOverlayAlpha: CGFloat = 0.9
+
+    /// Configures this window as the Sticky Terminal fullscreen overlay:
+    /// floats above other windows (including over other apps' fullscreen
+    /// Spaces), joins all Spaces, is excluded from window cycling, and is
+    /// slightly translucent so the content underneath remains faintly visible.
+    func configureAsStickyTerminalOverlay() {
+        isStickyTerminalOverlay = true
+        level = .statusBar
+        collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .ignoresCycle,
+            .fullScreenDisallowsTiling,
+        ]
+        hidesOnDeactivate = false
+        isExcludedFromWindowsMenu = true
+        isOpaque = false
+        alphaValue = Self.stickyTerminalOverlayAlpha
+        standardWindowButton(.closeButton)?.isHidden = true
+        standardWindowButton(.miniaturizeButton)?.isHidden = true
+        standardWindowButton(.zoomButton)?.isHidden = true
+    }
+
     private var isSoftHiddenForVisibilityController = false
 
     func setSoftHiddenForVisibilityController(_ isSoftHidden: Bool) {
@@ -172,13 +207,42 @@ final class CmuxMainWindow: NSWindow {
     /// otherwise be stranded off-screen (e.g. a display was disconnected), so a
     /// genuinely lost window can still be pulled back into view.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        // The Sticky Terminal overlay covers the full screen frame including
+        // the menu bar band; AppKit's default constraining for titled windows
+        // would clip it below the menu bar.
+        if isStickyTerminalOverlay {
+            return frameRect
+        }
         if Self.shouldPreserveFrameDuringConstrain(
             frameRect,
             visibleFrames: NSScreen.screens.map(\.visibleFrame)
         ) {
-            return frameRect
+            // Preserve off-screen freedom on the sides/bottom, but never let the
+            // TOP edge slide under the menu bar — that hides the titlebar and its
+            // traffic-light buttons (e.g. a window zoomed/restored to the full
+            // display frame, maxY 982 vs a 948 visibleFrame). Pin the top below
+            // the menu bar while keeping the rest of the preserved geometry.
+            let targetScreen = screen
+                ?? self.screen
+                ?? NSScreen.screens.first(where: { $0.frame.intersects(frameRect) })
+                ?? NSScreen.main
+            return Self.pinnedBelowMenuBar(frameRect, visibleFrame: targetScreen?.visibleFrame)
         }
         return super.constrainFrameRect(frameRect, to: screen)
+    }
+
+    /// Shifts (and, if taller than the visible area, shrinks) `frame` so its top
+    /// edge sits at or below the menu bar, leaving all other axes untouched. A
+    /// frame already fully below the menu bar is returned unchanged.
+    nonisolated static func pinnedBelowMenuBar(_ frame: NSRect, visibleFrame: NSRect?) -> NSRect {
+        guard let visibleFrame, visibleFrame.height > 0 else { return frame }
+        guard frame.maxY > visibleFrame.maxY else { return frame }
+        var pinned = frame
+        if pinned.height > visibleFrame.height {
+            pinned.size.height = visibleFrame.height
+        }
+        pinned.origin.y = visibleFrame.maxY - pinned.size.height
+        return pinned
     }
 
     /// Whether `proposedFrame` is reachable enough across `visibleFrames` that

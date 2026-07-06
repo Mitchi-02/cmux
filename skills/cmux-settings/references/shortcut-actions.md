@@ -14,6 +14,7 @@ Values for `shortcuts.bindings.<action>`:
 - `shortcuts.bindings.reloadConfiguration`
 - `shortcuts.bindings.showHideAllWindows`
 - `shortcuts.bindings.globalSearch`
+- `shortcuts.bindings.toggleStickyTerminal`
 - `shortcuts.bindings.newWindow`
 - `shortcuts.bindings.closeWindow`
 - `shortcuts.bindings.toggleFullScreen`

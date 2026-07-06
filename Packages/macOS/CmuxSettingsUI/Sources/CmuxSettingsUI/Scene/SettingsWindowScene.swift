@@ -499,6 +499,14 @@ public struct SettingsWindowRoot: View {
         )
         .id(anchorID(for: .globalHotkey))
 
+        StickyTerminalSection(
+            defaultsStore: defaultsStore,
+            jsonStore: jsonStore,
+            catalog: catalog,
+            errorLog: runtime.errorLog
+        )
+        .id(anchorID(for: .stickyTerminal))
+
         KeyboardShortcutsSection(
             jsonStore: jsonStore,
             catalog: catalog,

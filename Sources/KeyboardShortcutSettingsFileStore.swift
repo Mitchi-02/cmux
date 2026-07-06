@@ -1062,7 +1062,7 @@ final class CmuxSettingsFileStore {
             // a rebinding made in Settings only reaches this store in that shape.
             // Decode it here so every action resolved through this store — most
             // visibly the system-wide Carbon hotkeys (globalSearch,
-            // showHideAllWindows) — honors the rebinding instead of silently
+            // showHideAllWindows, toggleStickyTerminal) — honors the rebinding instead of silently
             // dropping it and falling back to the built-in default.
             if let object = rawValue as? [String: Any] {
                 return parseShortcutObjectForm(object, action: action)

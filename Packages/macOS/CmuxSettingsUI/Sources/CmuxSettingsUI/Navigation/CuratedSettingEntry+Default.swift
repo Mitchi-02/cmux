@@ -227,6 +227,11 @@ extension Array where Element == CuratedSettingEntry {
             .init(section: .globalHotkey, id: "enable-hotkey", title: "Enable System-Wide Hotkey", synonyms: "app.systemWideHotkeyEnabled global hotkey enable system wide show hide all windows"),
             .init(section: .globalHotkey, id: "shortcut", title: "Show/Hide All Windows", synonyms: "global hotkey shortcut recorder key command option control"),
 
+            // Sticky terminal
+            .init(section: .stickyTerminal, id: "enable", title: "Enable Sticky Terminal", synonyms: "app.stickyTerminalEnabled sticky terminal hotkey window quake overlay fullscreen dropdown show hide"),
+            .init(section: .stickyTerminal, id: "shortcut", title: "Show/Hide Sticky Terminal", synonyms: "sticky terminal shortcut recorder key command option control shift"),
+            .init(section: .stickyTerminal, id: "autoHide", title: "Hide When Focus Is Lost", synonyms: "app.stickyTerminalAutoHide sticky terminal auto hide focus lost switch app"),
+
             // Keyboard shortcuts
             .init(
                 section: .keyboardShortcuts,

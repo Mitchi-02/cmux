@@ -198,6 +198,24 @@ public struct AppCatalogSection: SettingCatalogSection {
         userDefaultsKey: "systemWideHotkey.enabled"
     )
 
+    /// Whether the Sticky Terminal global hotkey window is enabled. Defaults to
+    /// `true`. When enabled, the `toggleStickyTerminal` system-wide shortcut
+    /// shows/hides a dedicated fullscreen overlay cmux window.
+    public let stickyTerminalEnabled = DefaultsKey<Bool>(
+        id: "app.stickyTerminalEnabled",
+        defaultValue: true,
+        userDefaultsKey: "stickyTerminal.enabled"
+    )
+
+    /// Whether the Sticky Terminal window automatically hides when it loses
+    /// focus (Cmd+Tab away, clicking another display). Defaults to `false`:
+    /// the window stays visible until toggled with the shortcut.
+    public let stickyTerminalAutoHide = DefaultsKey<Bool>(
+        id: "app.stickyTerminalAutoHide",
+        defaultValue: false,
+        userDefaultsKey: "stickyTerminal.autoHide"
+    )
+
     /// Shared, cross-tag default display that DEBUG cmux builds open new
     /// windows on, identified by the display's `localizedName` (e.g.
     /// `"LG HDR 4K"`). Empty means the system default placement.

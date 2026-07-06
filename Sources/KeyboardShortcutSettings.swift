@@ -23,7 +23,7 @@ enum KeyboardShortcutSettings {
 
     static var settingsVisibleActions: [Action] {
         orderedSettingsVisibleActions(
-            from: publicShortcutActions.filter { $0 != .showHideAllWindows }
+            from: publicShortcutActions.filter { $0 != .showHideAllWindows && $0 != .toggleStickyTerminal }
         )
     }
 
@@ -67,6 +67,7 @@ enum KeyboardShortcutSettings {
         case reloadConfiguration
         case showHideAllWindows
         case globalSearch
+        case toggleStickyTerminal
         case newWindow
         case closeWindow
         case toggleFullScreen
@@ -192,6 +193,7 @@ enum KeyboardShortcutSettings {
             case .reloadConfiguration: return String(localized: "menu.app.reloadConfiguration", defaultValue: "Reload Configuration")
             case .showHideAllWindows: return String(localized: "settings.globalHotkey.shortcut", defaultValue: "Show/Hide All Windows")
             case .globalSearch: return String(localized: "shortcut.globalSearch.label", defaultValue: "Global Search")
+            case .toggleStickyTerminal: return String(localized: "shortcut.toggleStickyTerminal.label", defaultValue: "Show/Hide Sticky Terminal")
             case .newWindow: return String(localized: "shortcut.newWindow.label", defaultValue: "New Window")
             case .closeWindow: return String(localized: "shortcut.closeWindow.label", defaultValue: "Close Window")
             case .toggleFullScreen: return String(localized: "command.toggleFullScreen.title", defaultValue: "Toggle Full Screen")
@@ -332,6 +334,8 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: ".", command: true, shift: false, option: true, control: true)
             case .globalSearch:
                 return StoredShortcut(key: "f", command: true, shift: false, option: true, control: false)
+            case .toggleStickyTerminal:
+                return StoredShortcut(key: "t", command: true, shift: true, option: false, control: false)
             case .newWindow:
                 return StoredShortcut(key: "n", command: true, shift: true, option: false, control: false)
             case .closeWindow:
@@ -422,7 +426,9 @@ enum KeyboardShortcutSettings {
                 // isn't in a group.
                 return StoredShortcut(key: ".", command: true, shift: false, option: false, control: true)
             case .reopenClosedBrowserPanel:
-                return StoredShortcut(key: "t", command: true, shift: true, option: false, control: false)
+                // Cmd+Z reopens the most recently closed surface/terminal in the
+                // focused workspace (no-op if the workspace itself is gone).
+                return StoredShortcut(key: "z", command: true, shift: false, option: false, control: false)
             case .focusLeft:
                 return StoredShortcut(key: "←", command: true, shift: false, option: true, control: false)
             case .focusRight:
@@ -698,7 +704,7 @@ enum KeyboardShortcutSettings {
             // Preserve invalid settings-file values for the show/hide hotkey so managed
             // configuration remains visible instead of silently falling back to defaults.
             // Runtime registration still rejects unsupported Carbon hotkey shapes.
-            if usesNumberedDigitMatching || self == .globalSearch {
+            if usesNumberedDigitMatching || self == .globalSearch || self == .toggleStickyTerminal {
                 return nil
             }
             return shortcut
@@ -710,7 +716,7 @@ enum KeyboardShortcutSettings {
             }
 
             switch self {
-            case .showHideAllWindows, .globalSearch:
+            case .showHideAllWindows, .globalSearch, .toggleStickyTerminal:
                 return KeyboardShortcutSettings.normalizedSystemWideHotkeyShortcutResult(
                     shortcut,
                     for: self,
@@ -976,6 +982,7 @@ enum KeyboardShortcutSettings {
             if action.usesNumberedDigitMatching ||
                 action == .showHideAllWindows ||
                 action == .globalSearch ||
+                action == .toggleStickyTerminal ||
                 !action.allowsChordShortcut {
                 return nil
             }
@@ -1194,6 +1201,53 @@ enum SystemWideHotkeySettings {
     }
 }
 
+enum StickyTerminalSettings {
+    static let enabledKey = "stickyTerminal.enabled"
+    static let autoHideKey = "stickyTerminal.autoHide"
+    static let defaultEnabled = true
+    static let defaultAutoHide = false
+    static let action: KeyboardShortcutSettings.Action = .toggleStickyTerminal
+
+    static var defaultShortcut: StoredShortcut { action.defaultShortcut }
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: enabledKey) as? Bool ?? defaultEnabled
+    }
+
+    static func setEnabled(_ enabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: enabledKey)
+    }
+
+    static func isAutoHideEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: autoHideKey) as? Bool ?? defaultAutoHide
+    }
+
+    static func setAutoHideEnabled(_ enabled: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(enabled, forKey: autoHideKey)
+    }
+
+    static func shortcut() -> StoredShortcut {
+        if let managedShortcut = KeyboardShortcutSettings.settingsFileStore.override(for: action) {
+            return managedShortcut
+        }
+        return KeyboardShortcutSettings.shortcut(for: action)
+    }
+
+    static func setShortcut(_ shortcut: StoredShortcut) {
+        KeyboardShortcutSettings.setShortcut(shortcut, for: action)
+    }
+
+    static func isManagedBySettingsFile() -> Bool {
+        KeyboardShortcutSettings.isManagedBySettingsFile(action)
+    }
+
+    static func reset(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: enabledKey)
+        defaults.removeObject(forKey: autoHideKey)
+        defaults.removeObject(forKey: action.defaultsKey)
+    }
+}
+
 struct CarbonHotKeyRegistration: Equatable {
     let keyCode: UInt32
     let modifiers: UInt32
@@ -1205,10 +1259,12 @@ final class SystemWideHotkeyController {
     private static let hotKeyIDs: [KeyboardShortcutSettings.Action: UInt32] = [
         .showHideAllWindows: 1,
         .globalSearch: 2,
+        .toggleStickyTerminal: 3,
     ]
     private static let systemWideActions: [KeyboardShortcutSettings.Action] = [
         .showHideAllWindows,
         .globalSearch,
+        .toggleStickyTerminal,
     ]
 
     private var hotKeyRefs: [KeyboardShortcutSettings.Action: EventHotKeyRef] = [:]
@@ -1374,6 +1430,8 @@ final class SystemWideHotkeyController {
             return SystemWideHotkeySettings.isEnabled()
         case .globalSearch:
             return true
+        case .toggleStickyTerminal:
+            return StickyTerminalSettings.isEnabled()
         default:
             assertionFailure("Unhandled system-wide hotkey action: \(action.rawValue)")
             return false
@@ -1465,6 +1523,8 @@ final class SystemWideHotkeyController {
             AppDelegate.shared?.toggleApplicationVisibilityFromGlobalHotkey()
         case .globalSearch:
             AppDelegate.shared?.toggleGlobalSearchPaletteFromGlobalHotkey()
+        case .toggleStickyTerminal:
+            AppDelegate.shared?.toggleStickyTerminalFromGlobalHotkey()
         default:
             assertionFailure("Unhandled system-wide hotkey action: \(action.rawValue)")
             break

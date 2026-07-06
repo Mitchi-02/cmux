@@ -1350,6 +1350,7 @@
               "reloadConfiguration",
               "showHideAllWindows",
               "globalSearch",
+              "toggleStickyTerminal",
               "newWindow",
               "closeWindow",
               "toggleFullScreen",

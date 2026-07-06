@@ -18,6 +18,7 @@ import SwiftUI
 import Bonsplit
 import CMUXAgentLaunch
 import CoreServices
+import ServiceManagement
 import UserNotifications
 import Sentry
 import WebKit
@@ -894,6 +895,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         )
     )
+    private(set) var stickyTerminalWindowId: UUID?
+    lazy var stickyTerminalController = StickyTerminalController(
+        dependencies: .init(
+            ensureWindow: { [weak self] in self?.ensureStickyTerminalWindow() },
+            isEnabled: { StickyTerminalSettings.isEnabled() },
+            isAutoHideEnabled: { StickyTerminalSettings.isAutoHideEnabled() },
+            mouseLocation: { NSEvent.mouseLocation },
+            screens: { NSScreen.screens },
+            hideApplicationIfNoOtherVisibleWindow: { [weak self] in
+                guard let self, !self.hasVisibleMainTerminalWindow() else { return }
+                NSApp.hide(nil)
+            },
+            isShortcutRecorderActive: {
+                KeyboardShortcutRecorderActivity.isAnyRecorderActive
+                    || RecorderHostButton.isActivelyRecording
+            }
+        )
+    )
     private static let serviceErrorNoPath = NSString(string: String(localized: "error.clipboardFolderPath", defaultValue: "Could not load any folder path from the clipboard."))
     private static let didInstallWindowKeyEquivalentSwizzle: Void = {
         let targetClass: AnyClass = NSWindow.self
@@ -1287,6 +1306,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             syncActivationPolicy()
         }
         StartupBreadcrumbLog.append("appDelegate.didFinish.activationPolicy.synced")
+
+        if !isRunningUnderXCTest {
+            registerLoginItemIfNeeded()
+        }
 
         // Prewarm the shared restorable-agent index off the main thread so the first
         // tab/workspace/window close after launch reads a warm cache instead of paying a
@@ -1924,6 +1947,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             StartupBreadcrumbLog.append("appDelegate.shouldTerminate.reply", fields: ["shouldQuit": "0"])
         }
         replyToTerminateOnce(shouldQuit)
+    }
+
+    /// Keep the app (and its process-wide Carbon global hotkeys, e.g. the Sticky
+    /// Terminal toggle) alive after the last window closes. SwiftUI's `WindowGroup`
+    /// otherwise terminates the app when the final window closes, which would kill
+    /// the global hotkey. Closing the last terminal must only close the window;
+    /// quitting is explicit (Cmd+Q / menu / Dock Quit).
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -3328,7 +3360,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let primaryContext = contextForMainTerminalWindow(primaryWindow) else { return false }
 
         let startupSnapshot = startupSessionSnapshot
-        let primaryWindowSnapshot = startupSnapshot?.windows.first
+        // The sticky terminal restores separately (hidden) and must never be
+        // applied to the visible primary window.
+        let normalWindowSnapshots = startupSnapshot?.windows.filter { $0.isStickyTerminal != true } ?? []
+        let stickyWindowSnapshot = startupSnapshot?.windows.first { $0.isStickyTerminal == true }
+        let primaryWindowSnapshot = normalWindowSnapshots.first
         if let primaryWindowSnapshot {
             isApplyingSessionRestore = true
 #if DEBUG
@@ -3359,8 +3395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         guard let startupSnapshot else { return false }
 
-        let additionalWindows = Array(startupSnapshot
-            .windows
+        let additionalWindows = Array(normalWindowSnapshots
             .dropFirst()
             .prefix(max(0, SessionPersistencePolicy.maxWindowsPerSnapshot - 1)))
 #if DEBUG
@@ -3372,11 +3407,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             )
         }
 #endif
-        if !additionalWindows.isEmpty {
+        if !additionalWindows.isEmpty || stickyWindowSnapshot != nil {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 for windowSnapshot in additionalWindows {
                     _ = self.createMainWindow(sessionWindowSnapshot: windowSnapshot)
+                }
+                if let stickyWindowSnapshot, self.stickyTerminalWindowId == nil {
+                    _ = self.createMainWindow(
+                        sessionWindowSnapshot: stickyWindowSnapshot,
+                        shouldActivate: false,
+                        role: .stickyTerminal
+                    )
                 }
                 self.completeSessionRestoreOperation(isManualReopen: false)
             }
@@ -3429,11 +3471,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         var createdWindowIds: [UUID] = []
 
         for windowSnapshot in snapshotWindows {
+            let isSticky = windowSnapshot.isStickyTerminal == true
+            // At most one sticky terminal; restore it hidden and never as the
+            // activation primary.
+            if isSticky, stickyTerminalWindowId != nil { continue }
             let windowId = createMainWindow(
                 sessionWindowSnapshot: windowSnapshot,
-                shouldActivate: false
+                shouldActivate: false,
+                role: isSticky ? .stickyTerminal : .standard
             )
-            createdWindowIds.append(windowId)
+            if !isSticky {
+                createdWindowIds.append(windowId)
+            }
         }
 
         completeSessionRestoreOperation(isManualReopen: true)
@@ -3649,6 +3698,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return false
         }
 
+        // The window's TOP edge must not sit under the menu bar. A frame whose
+        // maxY exceeds the visibleFrame top (e.g. a window maximized to the full
+        // display frame, 982 vs a 948 visibleFrame) hides the titlebar and its
+        // traffic-light buttons even though a sliver of the top strip stays
+        // visible — so don't preserve it; let clampFrame pull it below the menu
+        // bar. (1px tolerance so a legitimately visibleFrame-maximized window,
+        // maxY == visibleFrame.maxY, is still preserved exactly.)
+        guard standardizedFrame.maxY <= targetDisplay.visibleFrame.maxY + 1 else {
+            return false
+        }
+
         let stripHeight = min(topStripHeight, standardizedFrame.height)
         let topStrip = CGRect(
             x: standardizedFrame.minX,
@@ -3802,6 +3862,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             rectApproximatelyEqual($0.cgRect, targetDisplay.frame)
         } ?? false
         guard visibleMatches || frameMatches else { return false }
+
+        // Never preserve a frame whose top edge sits under the menu bar — e.g. a
+        // window saved maximized to the FULL display frame (maxY 982 > a 948
+        // visibleFrame). Preserving it reopens with the titlebar + traffic-light
+        // buttons hidden behind the menu bar; fall through to clampFrame instead.
+        // A visibleFrame-maximized window (maxY == visibleFrame.maxY) still passes.
+        guard frame.standardized.maxY <= targetDisplay.visibleFrame.maxY + 1 else {
+            return false
+        }
 
         return frame.width.isFinite
             && frame.height.isFinite
@@ -4445,6 +4514,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func sortedMainWindowContextsForSessionSnapshot() -> [MainWindowContext] {
         mainWindowContexts.values.sorted { lhs, rhs in
+            // The sticky terminal sorts last so it can never become the
+            // snapshot's primary (first) window at restore.
+            let lhsIsSticky = lhs.windowId == stickyTerminalWindowId
+            let rhsIsSticky = rhs.windowId == stickyTerminalWindowId
+            if lhsIsSticky != rhsIsSticky {
+                return rhsIsSticky
+            }
             let lhsWindow = lhs.window ?? windowForMainWindowId(lhs.windowId)
             let rhsWindow = rhs.window ?? windowForMainWindowId(rhs.windowId)
             let lhsIsKey = lhsWindow?.isKeyWindow ?? false
@@ -4544,7 +4620,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 isVisible: context.sidebarState.isVisible,
                 selection: SessionSidebarSelection(selection: context.sidebarSelectionState.selection),
                 width: SessionPersistencePolicy.sanitizedSidebarWidth(Double(context.sidebarState.persistedWidth))
-            )
+            ),
+            isStickyTerminal: context.windowId == stickyTerminalWindowId ? true : nil
         )
     }
 
@@ -7167,11 +7244,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
         newWindowItem.target = self
         menu.addItem(newWindowItem)
+
+        let newStickyItem = NSMenuItem(
+            title: String(localized: "menu.file.newStickyWindow", defaultValue: "New Sticky Window"),
+            action: #selector(openStickyTerminalWindow(_:)),
+            keyEquivalent: ""
+        )
+        newStickyItem.target = self
+        menu.addItem(newStickyItem)
         return menu
     }
 
     @objc func openNewMainWindow(_ sender: Any?) {
         _ = createMainWindow(sourceWindow: preferredSourceWindowForNewMainWindow(sender: sender))
+    }
+
+    /// Dock/menu "New Sticky Window": reopen the single Sticky Terminal overlay if
+    /// it already exists, otherwise create it, then show it. There is at most one
+    /// sticky window; `show()` ensures + reveals it.
+    @objc func openStickyTerminalWindow(_ sender: Any?) {
+        stickyTerminalController.show()
     }
 
     func openNewMainWindow(preferredWindow: NSWindow?) {
@@ -8394,6 +8486,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         shouldActivate: Bool = true,
         sourceWindow preferredSourceWindow: NSWindow? = nil,
         remapClosedPanelHistoryFromSessionSnapshot: Bool = true,
+        role: MainWindowRole = .standard,
         restoredSessionSnapshotHandler: (([[UUID: UUID]], TabManager) -> Void)? = nil
     ) -> UUID {
         reserveInitialSocketPathIfNeeded()
@@ -8488,8 +8581,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let sourceContext = preferredMainWindowContextForWorkspaceCreation(
             debugSource: "createMainWindow.initialGeometry"
         )
-        let sourceWindow = resolvedMainWindowSource(preferredSourceWindow)
+        let candidateSourceWindow = resolvedMainWindowSource(preferredSourceWindow)
             ?? sourceContext.flatMap { resolvedWindow(for: $0) }
+        // Never inherit geometry from the Sticky Terminal overlay: it is a
+        // full-display panel (frame == screen.frame), so a normal window copying
+        // its frame lands with its titlebar UNDER the menu bar (traffic lights
+        // hidden). Fall back to persisted/default geometry, which is clamped to
+        // the visibleFrame. Creating the sticky itself is unaffected (role check).
+        let stickyOverlayWindow = stickyTerminalWindowId.flatMap { windowForMainWindowId($0) }
+        let sourceWindow = (candidateSourceWindow != nil && candidateSourceWindow === stickyOverlayWindow)
+            ? nil
+            : candidateSourceWindow
         let existingFrame = sourceWindow?.frame
         let sourceWindowIsNativeFullScreen: Bool = {
 #if DEBUG
@@ -8516,12 +8618,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             initialRect = CmuxMainWindow.defaultContentRect(styleMask: styleMask)
         }
 
-        let window = CmuxMainWindow(
-            contentRect: initialRect,
-            styleMask: styleMask,
-            backing: .buffered,
-            defer: false
-        )
+        // The sticky terminal is a non-activating panel so it can overlay other
+        // apps (including native-fullscreen Spaces) without activating cmux.
+        let window: NSWindow & StickyTerminalOverlayConfigurable = role == .stickyTerminal
+            ? StickyTerminalPanel(
+                contentRect: initialRect,
+                styleMask: styleMask,
+                backing: .buffered,
+                defer: false
+            )
+            : CmuxMainWindow(
+                contentRect: initialRect,
+                styleMask: styleMask,
+                backing: .buffered,
+                defer: false
+            )
         let minimumWindowSize = CmuxMainWindow.minimumContentSize
         window.minSize = minimumWindowSize
         window.contentMinSize = minimumWindowSize
@@ -8538,6 +8649,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // cmux persists and restores main windows itself. Disable AppKit window
         // restoration so the OS cannot resurrect stale duplicate main windows.
         window.isRestorable = false
+        if role == .stickyTerminal {
+            window.configureAsStickyTerminalOverlay()
+            stickyTerminalWindowId = windowId
+        }
         configureCmuxMainWindowDragBehavior(window)
         let explicitInitialFrame = restoredFrame ?? persistedGeometryFrame
         if let explicitInitialFrame {
@@ -8589,8 +8704,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 )
             }
             self.mainWindowControllers.removeAll(where: { $0 === controller })
+            // Forget the sticky window id AND drop the controller's reference to
+            // the closed window once it's truly closed, so the next show/menu
+            // request builds a fresh, registered sticky overlay + terminal.
+            // Reusing the closed (unregistered) window leaves it out of the
+            // main-window contexts → shortcut routing can't resolve it and every
+            // shortcut bypasses on the reopened overlay.
+            if self.stickyTerminalWindowId == windowId {
+                self.stickyTerminalWindowId = nil
+                self.stickyTerminalController.forgetWindow()
+            }
         }
         controller.shouldClose = { [weak self] in
+            // Sticky terminal: always closes cleanly when asked (Cmd+W on the last
+            // surface, or red button). It must NOT run the last-window quit warning
+            // (`handleMainTerminalWindowShouldClose`) — the app stays alive via
+            // `applicationShouldTerminateAfterLastWindowClosed` so the global hotkey
+            // keeps working, and `onClose` forgets the window id so the next
+            // Cmd+Shift+T reopens a fresh overlay. Multi-pane Cmd+W closes just the
+            // focused pane and never reaches here.
+            if role == .stickyTerminal { return true }
             let shouldClose = self?.handleMainTerminalWindowShouldClose() ?? true
             if !shouldClose {
                 self?.closedWindowHistorySuppressedWindowIds.remove(windowId)
@@ -8618,7 +8751,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
         publishCmuxWindowLifecycle(name: "window.created", windowId: windowId, origin: "create")
         installFileDropOverlay(on: window, tabManager: tabManager)
-        if !shouldActivate || TerminalController.shouldSuppressSocketCommandActivation() {
+        if role == .stickyTerminal {
+            // Created hidden; StickyTerminalController orders it front on demand.
+        } else if !shouldActivate || TerminalController.shouldSuppressSocketCommandActivation() {
             window.orderFront(nil)
             if shouldActivate, TerminalController.socketCommandAllowsInAppFocusMutations() {
                 setActiveMainWindow(window)
@@ -8830,6 +8965,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             onToggleSleepyMode: {
                 SleepyModeController.shared.toggle()
             },
+            onToggleStickyTerminal: { [weak self] in
+                self?.stickyTerminalController.toggle()
+            },
             onCheckForUpdates: { [weak self] in
                 self?.checkForUpdates(nil)
             },
@@ -8840,6 +8978,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 NSApp.terminate(nil)
             }
         )
+    }
+
+    func toggleStickyTerminalFromGlobalHotkey() {
+        stickyTerminalController.toggle()
+    }
+
+    /// Registers the app to launch at login so the Sticky Terminal (⇧⌘T) hotkey
+    /// is always ready. Skips dev/debug/staging builds — their transient bundle
+    /// ids would litter the user's Login Items list — and no-ops if already
+    /// enabled. Idempotent; safe to call every launch.
+    private func registerLoginItemIfNeeded() {
+        guard let bundleId = Bundle.main.bundleIdentifier,
+              !bundleId.contains("debug"),
+              !bundleId.contains("staging") else { return }
+        let service = SMAppService.mainApp
+        guard service.status != .enabled else { return }
+        do {
+            try service.register()
+#if DEBUG
+            cmuxDebugLog("loginItem.register success bundle=\(bundleId)")
+#endif
+        } catch {
+#if DEBUG
+            cmuxDebugLog("loginItem.register failed error=\(error)")
+#endif
+        }
+    }
+
+    /// The Sticky Terminal's `TabManager` when its window is the key window,
+    /// else nil. The Close Tab shortcut routes here FIRST, deterministically:
+    /// the sticky overlay is a non-activating `NSPanel`, and the first-responder
+    /// heuristic in `tabManagerForFocusedCloseShortcut` resolves it
+    /// inconsistently — it happened to work on the first show but missed after a
+    /// hide/reopen cycle, so Cmd+W silently did nothing on a reopened sticky.
+    /// `isKeyWindow` is injected so the routing decision is unit-testable without
+    /// a live key window.
+    func stickyTerminalCloseTarget(isKeyWindow: (UUID) -> Bool) -> TabManager? {
+        guard let stickyId = stickyTerminalWindowId, isKeyWindow(stickyId) else { return nil }
+        return tabManagerFor(windowId: stickyId)
+    }
+
+#if DEBUG
+    /// Test seam: mark a registered window as the Sticky Terminal overlay so
+    /// close-routing tests can exercise `stickyTerminalCloseTarget`.
+    func setStickyTerminalWindowIdForTesting(_ windowId: UUID?) {
+        stickyTerminalWindowId = windowId
+    }
+#endif
+
+    private func ensureStickyTerminalWindow() -> NSWindow? {
+        if let stickyTerminalWindowId,
+           let window = windowForMainWindowId(stickyTerminalWindowId) {
+            return window
+        }
+        let windowId = createMainWindow(shouldActivate: false, role: .stickyTerminal)
+        return windowForMainWindowId(windowId)
     }
 
     func toggleGlobalSearchPaletteFromGlobalHotkey() {
@@ -9092,14 +9286,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func mainWindowsForVisibilityController() -> [NSWindow] {
+        // The Sticky Terminal overlay has its own show/hide lifecycle and must
+        // not participate in whole-app visibility toggling.
         var windows: [NSWindow] = []
         for context in sortedMainWindowContextsForSessionSnapshot() {
+            guard context.windowId != stickyTerminalWindowId else { continue }
             guard let window = resolvedWindow(for: context) else { continue }
             if !windows.contains(where: { $0 === window }) {
                 windows.append(window)
             }
         }
         for window in NSApp.windows where isMainTerminalWindow(window) {
+            guard (window as? StickyTerminalOverlayConfigurable)?.isStickyTerminalOverlay != true else { continue }
             if !windows.contains(where: { $0 === window }) {
                 windows.append(window)
             }
@@ -12388,7 +12586,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             // here would swallow the first stroke and leave the second one
             // orphaned, breaking that keystroke for the focused terminal/browser
             // input.
-            guard action != .showHideAllWindows && action != .globalSearch && action.allowsChordShortcut else { return false }
+            guard action != .showHideAllWindows && action != .globalSearch
+                && action != .toggleStickyTerminal && action.allowsChordShortcut else { return false }
             guard !action.isBrowserContentShortcut else { return false }
             return KeyboardShortcutSettings.shortcut(for: action).hasChord
         }
@@ -13511,6 +13710,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // The Close Tab shortcut must close the focused panel even if first-responder
         // momentarily lags on a browser NSTextView during split focus transitions.
         if matchConfiguredShortcut(event: event, action: .closeTab) {
+            // Sticky overlay first, keyed off the real key window (deterministic).
+            // Closes the focused surface; on the last surface `closePanel`'s
+            // window-close → `shouldClose` (returns true) tears the hotkey window
+            // down without quitting the app. Fixes Cmd+W doing nothing on a
+            // reopened sticky, where the focus heuristic below mis-resolves the
+            // non-activating panel.
+            if let stickyManager = stickyTerminalCloseTarget(isKeyWindow: {
+                self.windowForMainWindowId($0)?.isKeyWindow == true
+            }) {
+                stickyManager.closeCurrentPanelWithConfirmation()
+                return true
+            }
             let routedManager = tabManagerForFocusedCloseShortcut(event: event)
             // Browser popup windows primarily intercept the configured Close Tab shortcut
             // in BrowserPopupPanel. This AppDelegate path is a fallback for cases where
@@ -15394,6 +15605,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func isMenuBackedShortcutAction(_ action: KeyboardShortcutSettings.Action) -> Bool {
         action != .showHideAllWindows
             && action != .globalSearch
+            && action != .toggleStickyTerminal
             && action != .clearScreenKeepScrollback
             && action != .fileExplorerOpenSelection
             && action != .fileExplorerOpenSelectionFinderAlias

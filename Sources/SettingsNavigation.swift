@@ -14,6 +14,7 @@ enum SettingsNavigationTarget: String, CaseIterable, Identifiable {
     case browser
     case browserImport
     case globalHotkey
+    case stickyTerminal
     case keyboardShortcuts
     case workspaceColors
     case settingsJSON
@@ -51,6 +52,8 @@ enum SettingsNavigationTarget: String, CaseIterable, Identifiable {
             return String(localized: "settings.browser.import", defaultValue: "Import Browser Data")
         case .globalHotkey:
             return String(localized: "settings.section.globalHotkey", defaultValue: "Global Hotkey")
+        case .stickyTerminal:
+            return String(localized: "settings.section.stickyTerminal", defaultValue: "Sticky Terminal")
         case .keyboardShortcuts:
             return String(localized: "settings.section.keyboardShortcuts", defaultValue: "Keyboard Shortcuts")
         case .settingsJSON:
@@ -90,6 +93,8 @@ enum SettingsNavigationTarget: String, CaseIterable, Identifiable {
             return "square.and.arrow.down"
         case .globalHotkey:
             return "keyboard.badge.ellipsis"
+        case .stickyTerminal:
+            return "macwindow.on.rectangle"
         case .keyboardShortcuts:
             return "keyboard"
         case .settingsJSON:
@@ -129,6 +134,8 @@ enum SettingsNavigationTarget: String, CaseIterable, Identifiable {
             return "\(title) browser import data bookmarks history cookies"
         case .globalHotkey:
             return "\(title) system wide shortcut"
+        case .stickyTerminal:
+            return "\(title) sticky terminal hotkey window quake overlay fullscreen dropdown auto hide"
         case .keyboardShortcuts:
             return "\(title) keybindings commands chords"
         case .settingsJSON:
@@ -450,6 +457,9 @@ enum SettingsSearchIndex {
         setting(.browser, "history", String(localized: "settings.browser.history", defaultValue: "Browsing History"), "clear visited suggestions"),
         setting(.globalHotkey, "enable-hotkey", String(localized: "settings.globalHotkey.enable", defaultValue: "Enable System-Wide Hotkey"), "global shortcut show hide windows"),
         setting(.globalHotkey, "shortcut", String(localized: "settings.section.globalHotkey", defaultValue: "Global Hotkey"), "keyboard recorder command option control"),
+        setting(.stickyTerminal, "enable", String(localized: "settings.stickyTerminal.enable", defaultValue: "Enable Sticky Terminal"), "sticky terminal hotkey window quake overlay fullscreen dropdown"),
+        setting(.stickyTerminal, "shortcut", String(localized: "shortcut.toggleStickyTerminal.label", defaultValue: "Show/Hide Sticky Terminal"), "keyboard recorder command option control shift"),
+        setting(.stickyTerminal, "autoHide", String(localized: "settings.stickyTerminal.autoHide", defaultValue: "Hide When Focus Is Lost"), "auto hide focus lost switch app"),
         setting(.keyboardShortcuts, "shortcut-chords", String(localized: "settings.shortcuts.chords", defaultValue: "Shortcut Chords"), "tmux multi step keybindings"),
         setting(.keyboardShortcuts, "reset-defaults", String(localized: "settings.shortcuts.resetDefaults", defaultValue: "Reset Default Shortcuts"), "restore built in builtin defaults keybindings hotkeys chords commands"),
         setting(.keyboardShortcuts, "shortcuts", String(localized: "settings.section.keyboardShortcuts", defaultValue: "Keyboard Shortcuts"), "keybindings commands"),

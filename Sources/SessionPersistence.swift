@@ -1902,6 +1902,9 @@ struct SessionWindowSnapshot: Codable, Sendable {
     var display: SessionDisplaySnapshot?
     var tabManager: SessionTabManagerSnapshot
     var sidebar: SessionSidebarSnapshot
+    /// `true` when this window is the Sticky Terminal overlay. Optional so
+    /// snapshots written by older builds decode as regular windows.
+    var isStickyTerminal: Bool? = nil
 }
 
 struct AppSessionSnapshot: Codable, Sendable {

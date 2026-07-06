@@ -462,6 +462,11 @@ final class WindowDecorationsController {
         if window.styleMask.contains(.nonactivatingPanel) {
             return true
         }
+        // The Sticky Terminal overlay is a chromeless iTerm2-style hotkey
+        // window: never show its traffic-light buttons.
+        if (window as? StickyTerminalOverlayConfigurable)?.isStickyTerminalOverlay == true {
+            return true
+        }
         return false
     }
 }
